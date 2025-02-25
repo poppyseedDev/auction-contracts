@@ -56,7 +56,7 @@ contract DutchAuctionSellingTokenWithToken {
 
     function buy(uint tokenAmount) external {
         require(block.timestamp < expiresAt, "This auction has ended");
-        require(tokensSold + tokenAmount <= amount, "Not enough tokens left");
+        require(tokensSold + tokenAmount <= amount, "Not enough tokens left"); // confidential check
         require(tokenAmount > 0, "Token amount must be greater than 0");
 
         uint pricePerToken = getPrice();
@@ -66,8 +66,8 @@ contract DutchAuctionSellingTokenWithToken {
         tokensSold += tokenAmount;
 
         // Interactions
-        paymentToken.safeTransferFrom(msg.sender, seller, totalCost); // Payment with USDC
-        token.safeTransferFrom(seller, msg.sender, tokenAmount); // Transfer auctioned tokens
+        paymentToken.safeTransferFrom(msg.sender, seller, totalCost); // Payment with Confidential USDC
+        token.safeTransferFrom(seller, msg.sender, tokenAmount); // Confidential Transfer auctioned tokens
 
         emit TokensPurchased(msg.sender, tokenAmount, pricePerToken);
     }
