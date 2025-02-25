@@ -9,8 +9,8 @@ describe("DutchAuctionSellingERC20", function () {
 
   const startingPrice = ethers.parseEther("0.0001");
   const reservePrice = ethers.parseEther("0.00001");
-  const discountRate = ethers.parseUnits("100", "wei");
-  const tokenAmount = 1n;
+  const discountRate = ethers.parseUnits("10", "wei");
+  const tokenAmount = 10n;
 
   beforeEach(async function () {
     [seller, buyer] = await ethers.getSigners();

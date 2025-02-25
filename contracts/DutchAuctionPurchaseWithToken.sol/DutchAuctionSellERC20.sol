@@ -4,15 +4,16 @@ pragma solidity ^0.8.24;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-contract DutchAuctionSellingERC20 {
+contract DutchAuctionSellingTokenWithToken {
     using SafeERC20 for IERC20;
 
     uint private constant DURATION = 7 days;
 
     IERC20 public immutable token;
+    IERC20 public immutable paymentToken; // USDC for payment
     uint public immutable amount;
 
-    address payable public immutable seller;
+    address public immutable seller;
     uint public immutable startingPrice;
     uint public immutable discountRate;
     uint public immutable startAt;
@@ -22,8 +23,15 @@ contract DutchAuctionSellingERC20 {
 
     event TokensPurchased(address indexed buyer, uint amount, uint price);
 
-    constructor(uint _startingPrice, uint _discountRate, address _token, uint _amount, uint _reservePrice) {
-        seller = payable(msg.sender);
+    constructor(
+        uint _startingPrice,
+        uint _discountRate,
+        address _token,
+        address _paymentToken,
+        uint _amount,
+        uint _reservePrice
+    ) {
+        seller = msg.sender;
         startingPrice = _startingPrice;
         discountRate = _discountRate;
         startAt = block.timestamp;
@@ -36,6 +44,7 @@ contract DutchAuctionSellingERC20 {
         require(_startingPrice > _reservePrice, "Starting price must be greater than reserve price");
 
         token = IERC20(_token);
+        paymentToken = IERC20(_paymentToken);
         amount = _amount;
     }
 
@@ -45,30 +54,20 @@ contract DutchAuctionSellingERC20 {
         return startingPrice > discount + reservePrice ? startingPrice - discount : reservePrice;
     }
 
-    function buy(uint tokenAmount) external payable {
+    function buy(uint tokenAmount) external {
         require(block.timestamp < expiresAt, "This auction has ended");
         require(tokensSold + tokenAmount <= amount, "Not enough tokens left");
         require(tokenAmount > 0, "Token amount must be greater than 0");
 
         uint pricePerToken = getPrice();
         uint totalCost = pricePerToken * tokenAmount;
-        require(msg.value >= totalCost, "Insufficient ETH sent");
 
         // Effects
         tokensSold += tokenAmount;
 
         // Interactions
-        token.safeTransferFrom(seller, msg.sender, tokenAmount);
-
-        // Handle payments
-        uint refund = msg.value - totalCost;
-        if (refund > 0) {
-            (bool success1, ) = msg.sender.call{ value: refund }("");
-            require(success1, "Refund failed");
-        }
-
-        (bool success2, ) = seller.call{ value: totalCost }("");
-        require(success2, "Transfer to seller failed");
+        paymentToken.safeTransferFrom(msg.sender, seller, totalCost); // Payment with USDC
+        token.safeTransferFrom(seller, msg.sender, tokenAmount); // Transfer auctioned tokens
 
         emit TokensPurchased(msg.sender, tokenAmount, pricePerToken);
     }

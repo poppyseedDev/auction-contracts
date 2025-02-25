@@ -94,6 +94,6 @@
     "mint-sepolia": "hardhat mint --amount 42 --network sepolia"
   },
   "dependencies": {
-    "@openzeppelin/contracts": "^5.0.2"
+    "@openzeppelin/contracts": "^5.1.0"
   }
 }
