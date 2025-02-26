@@ -1,0 +1,1 @@
+If the user did the bid in the past, but now the token price has gone down and they want to buy more tokens, they can use some of the refundable paymentToken towards buying more tokens

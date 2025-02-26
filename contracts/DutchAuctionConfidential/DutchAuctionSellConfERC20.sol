@@ -29,8 +29,15 @@ contract DutchAuctionSellingConfidentialERC20 is
     uint public immutable expiresAt;
     uint public immutable reservePrice;
     uint public immutable amount;
+    bool public auctionStart;
 
     uint64 public tokensLeftReveal;
+
+    struct Bid {
+        euint64 tokenAmount;
+        euint64 paidAmount;
+    }
+    mapping(address => Bid) public bids;
 
     event EncryptedBidSubmitted(address indexed bidder, einput encryptedBid);
     event TokensSold(address indexed buyer, euint64 encryptedAmount);
@@ -49,27 +56,46 @@ contract DutchAuctionSellingConfidentialERC20 is
         startAt = block.timestamp;
         expiresAt = block.timestamp + DURATION;
         reservePrice = _reservePrice;
+        auctionStart = false;
 
         require(_startingPrice >= _discountRate * DURATION + _reservePrice, "Starting price too low");
-        require(_amount > 0, "Token amount must be greater than zero");
         require(_reservePrice > 0, "Reserve price must be greater than zero");
         require(_startingPrice > _reservePrice, "Starting price must be greater than reserve price");
 
-        token = _token;
-        paymentToken = _paymentToken;
         amount = _amount; // initial amount should be known
         tokensLeft = TFHE.asEuint64(_amount);
+        token = _token;
+        paymentToken = _paymentToken;
         TFHE.allowThis(tokensLeft);
+        TFHE.allow(tokensLeft, owner());
+    }
+
+    function initialize() external onlyOwner {
+        require(!auctionStart, "Auction already started");
+
+        euint64 encAmount = TFHE.asEuint64(amount);
+
+        TFHE.allowTransient(encAmount, address(token));
+
+        // Transfer tokens from seller to the auction contract
+        token.transferFrom(msg.sender, address(this), encAmount);
+        auctionStart = true;
     }
 
     function getPrice() public view returns (uint) {
+        if (block.timestamp >= expiresAt) {
+            return reservePrice;
+        }
+
         uint timeElapsed = block.timestamp - startAt;
         uint discount = discountRate * timeElapsed;
-        return startingPrice > discount + reservePrice ? startingPrice - discount : reservePrice;
+        uint currentPrice = startingPrice > discount ? startingPrice - discount : 0;
+        return currentPrice > reservePrice ? currentPrice : reservePrice;
     }
 
-    function buy(einput encryptedValue, bytes calldata inputProof) external {
+    function bid(einput encryptedValue, bytes calldata inputProof) external {
         require(block.timestamp < expiresAt, "This auction has ended");
+        require(auctionStart, "Auction not started");
 
         euint64 tokenAmount = TFHE.asEuint64(encryptedValue, inputProof); // amount of tokens you want to get
 
@@ -77,14 +103,38 @@ contract DutchAuctionSellingConfidentialERC20 is
         euint64 currentPrice = TFHE.asEuint64(pricePerToken);
         euint64 totalCost = TFHE.mul(currentPrice, tokenAmount);
 
+        // Calculate potential refund from previous bid
+        Bid storage userBid = bids[msg.sender];
+        if (TFHE.isInitialized(userBid.tokenAmount)) {
+            euint64 previousTokenAmount = userBid.tokenAmount;
+            euint64 previousPaidAmount = userBid.paidAmount;
+            euint64 newPriceForOldTokens = TFHE.mul(currentPrice, previousTokenAmount);
+            euint64 potentialRefund = TFHE.sub(previousPaidAmount, newPriceForOldTokens);
+
+            // Update total cost by subtracting the potential refund
+            totalCost = TFHE.sub(totalCost, potentialRefund);
+
+            // Ensure totalCost doesn't go negative
+            ebool isPositiveCost = TFHE.gt(totalCost, TFHE.asEuint64(0));
+            totalCost = TFHE.select(isPositiveCost, totalCost, TFHE.asEuint64(0));
+
+            tokenAmount = TFHE.add(previousTokenAmount, tokenAmount);
+            totalCost = TFHE.add(previousPaidAmount, totalCost);
+        }
         // Check if enough tokens are left
         ebool enoughTokens = TFHE.le(tokenAmount, tokensLeft);
         tokenAmount = TFHE.select(enoughTokens, tokenAmount, TFHE.asEuint64(0));
         totalCost = TFHE.select(enoughTokens, totalCost, TFHE.asEuint64(0));
 
-        // Interactions
-        paymentToken.transferFrom(msg.sender, seller, totalCost); // Payment with Confidential USDC
-        token.transfer(msg.sender, tokenAmount); // Confidential Transfer auctioned tokens
+        // Transfer payment
+        TFHE.allowTransient(totalCost, address(paymentToken));
+        paymentToken.transferFrom(msg.sender, address(this), totalCost);
+
+        // Update bid information with cumulative amounts
+        bids[msg.sender].tokenAmount = tokenAmount;
+        bids[msg.sender].paidAmount = totalCost;
+        TFHE.allowThis(bids[msg.sender].tokenAmount);
+        TFHE.allowThis(bids[msg.sender].paidAmount);
 
         // Deduct tokens from the remaining balance
         tokensLeft = TFHE.sub(tokensLeft, tokenAmount);
@@ -92,6 +142,26 @@ contract DutchAuctionSellingConfidentialERC20 is
         TFHE.allow(tokensLeft, owner());
 
         emit TokensSold(msg.sender, tokenAmount);
+    }
+
+    function claimUser() external {
+        require(block.timestamp > expiresAt, "Auction hasn't ended");
+
+        Bid storage userBid = bids[msg.sender];
+
+        uint finalPrice = getPrice();
+        euint64 finalPricePerToken = TFHE.asEuint64(finalPrice);
+        euint64 finalCost = TFHE.mul(finalPricePerToken, userBid.tokenAmount);
+        euint64 refundAmount = TFHE.sub(userBid.paidAmount, finalCost);
+
+        // Transfer tokens and refund
+        TFHE.allowTransient(userBid.tokenAmount, address(token));
+        token.transfer(msg.sender, userBid.tokenAmount);
+        TFHE.allowTransient(refundAmount, address(paymentToken));
+        paymentToken.transfer(msg.sender, refundAmount);
+
+        // Clear the bid
+        delete bids[msg.sender];
     }
 
     /// @notice Request decryption tokensLeft
@@ -110,8 +180,8 @@ contract DutchAuctionSellingConfidentialERC20 is
     }
 
     function cancelAuction() external onlyOwner {
-        require(msg.sender == seller, "Only seller can cancel");
         require(block.timestamp < expiresAt, "Auction already ended");
+        TFHE.allowTransient(tokensLeft, address(token));
 
         // Refund remaining tokens
         token.transfer(seller, tokensLeft);
