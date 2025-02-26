@@ -246,6 +246,9 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
 
       await this.auction.connect(this.signers.bob).bid(encryptedBid1.handles[0], encryptedBid1.inputProof);
 
+      const oneDay = 24n * 60n * 60n;
+      await time.increase(oneDay);
+
       // Second bid
       const bidAmount2 = 30n;
       const input2 = this.instance.createEncryptedInput(this.auctionAddress, this.signers.bob.address);

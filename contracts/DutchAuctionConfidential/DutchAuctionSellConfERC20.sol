@@ -109,6 +109,7 @@ contract DutchAuctionSellingConfidentialERC20 is
             euint64 previousTokenAmount = userBid.tokenAmount;
             euint64 previousPaidAmount = userBid.paidAmount;
             euint64 newPriceForOldTokens = TFHE.mul(currentPrice, previousTokenAmount);
+            // previousPaidAmount - newPriceForOldTokens
             euint64 potentialRefund = TFHE.sub(previousPaidAmount, newPriceForOldTokens);
 
             // Update total cost by subtracting the potential refund
@@ -117,9 +118,6 @@ contract DutchAuctionSellingConfidentialERC20 is
             // Ensure totalCost doesn't go negative
             ebool isPositiveCost = TFHE.gt(totalCost, TFHE.asEuint64(0));
             totalCost = TFHE.select(isPositiveCost, totalCost, TFHE.asEuint64(0));
-
-            tokenAmount = TFHE.add(previousTokenAmount, tokenAmount);
-            totalCost = TFHE.add(previousPaidAmount, totalCost);
         }
         // Check if enough tokens are left
         ebool enoughTokens = TFHE.le(tokenAmount, tokensLeft);
@@ -185,9 +183,5 @@ contract DutchAuctionSellingConfidentialERC20 is
 
         // Refund remaining tokens
         token.transfer(seller, tokensLeft);
-    }
-
-    function getRemainingTokensEncrypted() external view returns (euint64) {
-        return tokensLeft;
     }
 }
