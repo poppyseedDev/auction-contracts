@@ -19,9 +19,6 @@ contract DutchAuctionSellingConfidentialERC20 is
     GatewayCaller,
     Ownable2Step
 {
-    /// @notice Duration of the auction in seconds
-    uint private constant DURATION = 7 days;
-
     /// @notice The ERC20 token being auctioned
     ConfidentialERC20 public immutable token;
     /// @notice The token used for payments
@@ -90,6 +87,7 @@ contract DutchAuctionSellingConfidentialERC20 is
     /// @param _paymentToken Address of token used for payment
     /// @param _amount Total amount of tokens to auction
     /// @param _reservePrice Minimum price per token
+    /// @param _biddingTime Duration of the auction in seconds
     /// @param _isStoppable Whether the auction can be stopped manually
     constructor(
         uint _startingPrice,
@@ -98,17 +96,18 @@ contract DutchAuctionSellingConfidentialERC20 is
         ConfidentialERC20 _paymentToken,
         uint _amount,
         uint _reservePrice,
+        uint256 _biddingTime,
         bool _isStoppable
     ) Ownable(msg.sender) {
         seller = payable(msg.sender);
         startingPrice = _startingPrice;
         discountRate = _discountRate;
         startAt = block.timestamp;
-        expiresAt = block.timestamp + DURATION;
+        expiresAt = block.timestamp + _biddingTime;
         reservePrice = _reservePrice;
         stoppable = _isStoppable;
 
-        require(_startingPrice >= _discountRate * DURATION + _reservePrice, "Starting price too low");
+        require(_startingPrice >= _discountRate * _biddingTime + _reservePrice, "Starting price too low");
         require(_reservePrice > 0, "Reserve price must be greater than zero");
         require(_startingPrice > _reservePrice, "Starting price must be greater than reserve price");
 
@@ -188,6 +187,8 @@ contract DutchAuctionSellingConfidentialERC20 is
             // Final cost = (old tokens × new price) + (new tokens × new price)
             finalCost = TFHE.add(oldTokensAtNewPrice, newTokensCost);
 
+            // If there are not enough tokens available we cannot revert, but have to make sure
+            // things stay the same
             finalTokenAmount = TFHE.select(enoughTokens, finalTokenAmount, oldTokenAmount);
             finalCost = TFHE.select(enoughTokens, finalCost, oldPaidAmount);
         }

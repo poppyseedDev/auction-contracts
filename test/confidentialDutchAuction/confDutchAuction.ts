@@ -14,6 +14,7 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
   const USDC_AMOUNT = 1000n;
   const RESERVE_PRICE = ethers.parseEther("0.00001");
   const STOPPABLE = true;
+  const DURATION = 7 * 24 * 60 * 60; // 7 days in seconds
 
   before(async function () {
     await initSigners();
@@ -48,6 +49,7 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
       this.paymentTokenAddress,
       TOKEN_AMOUNT,
       RESERVE_PRICE,
+      DURATION,
       STOPPABLE,
     );
     await this.auction.waitForDeployment();
@@ -98,6 +100,7 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
           await this.paymentToken.getAddress(),
           TOKEN_AMOUNT,
           RESERVE_PRICE,
+          DURATION,
           STOPPABLE,
         ),
       ).to.be.revertedWith("Starting price too low");
