@@ -4,6 +4,7 @@ import { ethers } from "hardhat";
 
 import { awaitAllDecryptionResults, initGateway } from "../asyncDecrypt";
 import { createInstance } from "../instance";
+import { reencryptEuint64 } from "../reencrypt";
 import { getSigners, initSigners } from "../signers";
 
 describe("DutchAuctionSellingConfidentialERC20", function () {
@@ -12,6 +13,7 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
   const TOKEN_AMOUNT = 1000n;
   const USDC_AMOUNT = 1000n;
   const RESERVE_PRICE = ethers.parseEther("0.00001");
+  const STOPPABLE = true;
 
   before(async function () {
     await initSigners();
@@ -46,6 +48,7 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
       this.paymentTokenAddress,
       TOKEN_AMOUNT,
       RESERVE_PRICE,
+      STOPPABLE,
     );
     await this.auction.waitForDeployment();
     this.auctionAddress = await this.auction.getAddress();
@@ -95,6 +98,7 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
           await this.paymentToken.getAddress(),
           TOKEN_AMOUNT,
           RESERVE_PRICE,
+          STOPPABLE,
         ),
       ).to.be.revertedWith("Starting price too low");
     });
@@ -133,8 +137,9 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
 
     it("Should not allow cancellation after expiration", async function () {
       await time.increase(7 * 24 * 60 * 60 + 1); // 7 days + 1 second
-      await expect(this.auction.connect(this.signers.alice).cancelAuction()).to.be.revertedWith(
-        "Auction already ended",
+      await expect(this.auction.connect(this.signers.alice).cancelAuction()).to.be.revertedWithCustomError(
+        this.auction,
+        "TooLate",
       );
     });
   });
@@ -179,7 +184,7 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
 
       await expect(
         this.auction.connect(this.signers.bob).bid(encryptedBid.handles[0], encryptedBid.inputProof),
-      ).to.be.revertedWith("This auction has ended");
+      ).to.be.to.be.revertedWithCustomError(this.auction, "TooLate");
     });
 
     it("Should allow claiming tokens after auction ends", async function () {
@@ -208,7 +213,10 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
       await this.auction.connect(this.signers.bob).bid(encryptedBid.handles[0], encryptedBid.inputProof);
 
       // Try to claim immediately
-      await expect(this.auction.connect(this.signers.bob).claimUser()).to.be.revertedWith("Auction hasn't ended");
+      await expect(this.auction.connect(this.signers.bob).claimUser()).to.be.revertedWithCustomError(
+        this.auction,
+        "TooEarly",
+      );
     });
   });
 
@@ -264,6 +272,222 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
       // Verify the revealed amount matches expected value after both bids
       const tokensLeftReveal = await this.auction.tokensLeftReveal();
       expect(tokensLeftReveal).to.equal(TOKEN_AMOUNT - (bidAmount1 + bidAmount2));
+    });
+  });
+
+  describe("Token balance verification", function () {
+    it("Should correctly transfer tokens after successful bid and claim", async function () {
+      // Place a bid
+      const bidAmount = 100n;
+      const input = this.instance.createEncryptedInput(this.auctionAddress, this.signers.bob.address);
+      input.add64(bidAmount);
+      const encryptedBid = await input.encrypt();
+
+      // Get initial balances
+      const initialAuctionTokenAlice = await this.auctionToken.balanceOf(this.signers.alice);
+      const initialPaymentTokenBob = await this.paymentToken.balanceOf(this.signers.bob);
+
+      // Place bid
+      await this.auction.connect(this.signers.bob).bid(encryptedBid.handles[0], encryptedBid.inputProof);
+
+      // Move time forward to end the auction
+      await time.increase(7 * 24 * 60 * 60 + 1);
+
+      // Claim tokens
+      await this.auction.connect(this.signers.bob).claimUser();
+      await this.auction.connect(this.signers.alice).claimSeller();
+
+      // Get final balances
+      const finalAuctionTokenAlice = await this.auctionToken.balanceOf(this.signers.alice);
+      const finalAuctionTokenBob = await this.auctionToken.balanceOf(this.signers.bob);
+      const finalPaymentTokenAlice = await this.paymentToken.balanceOf(this.signers.alice);
+      const finalPaymentTokenBob = await this.paymentToken.balanceOf(this.signers.bob);
+
+      // Decrypt and verify balances
+      const decryptedInitialAuctionTokenAlice = await reencryptEuint64(
+        this.signers.alice,
+        this.instance,
+        initialAuctionTokenAlice,
+        this.auctionTokenAddress,
+      );
+      const decryptedFinalAuctionTokenAlice = await reencryptEuint64(
+        this.signers.alice,
+        this.instance,
+        finalAuctionTokenAlice,
+        this.auctionTokenAddress,
+      );
+
+      const decryptedFinalAuctionTokenBob = await reencryptEuint64(
+        this.signers.bob,
+        this.instance,
+        finalAuctionTokenBob,
+        this.auctionTokenAddress,
+      );
+
+      const decryptedFinalPaymentTokenAlice = await reencryptEuint64(
+        this.signers.alice,
+        this.instance,
+        finalPaymentTokenAlice,
+        this.paymentTokenAddress,
+      );
+      const decryptedInitialPaymentTokenBob = await reencryptEuint64(
+        this.signers.bob,
+        this.instance,
+        initialPaymentTokenBob,
+        this.paymentTokenAddress,
+      );
+      const decryptedFinalPaymentTokenBob = await reencryptEuint64(
+        this.signers.bob,
+        this.instance,
+        finalPaymentTokenBob,
+        this.paymentTokenAddress,
+      );
+
+      // Verify auction token balances
+      expect(decryptedInitialAuctionTokenAlice).to.equal(0n); // Alice transferred all tokens to auction contract
+      expect(decryptedFinalAuctionTokenAlice).to.equal(TOKEN_AMOUNT - bidAmount);
+      expect(decryptedFinalAuctionTokenBob).to.equal(bidAmount);
+
+      // Calculate expected payment based on final price
+      const finalPrice = await this.auction.getPrice();
+      const expectedPayment = (finalPrice * bidAmount) / ethers.parseEther("1");
+
+      // Verify payment token balances
+      expect(decryptedInitialPaymentTokenBob).to.equal(USDC_AMOUNT);
+      expect(decryptedFinalPaymentTokenAlice).to.equal(expectedPayment);
+      expect(decryptedFinalPaymentTokenBob).to.equal(USDC_AMOUNT - expectedPayment);
+    });
+
+    it("Should return tokens to seller after cancellation", async function () {
+      // Get initial balance
+      const initialAuctionTokenAlice = await this.auctionToken.balanceOf(this.signers.alice);
+
+      // Cancel auction
+      await this.auction.connect(this.signers.alice).cancelAuction();
+
+      // Get final balance
+      const finalAuctionTokenAlice = await this.auctionToken.balanceOf(this.signers.alice);
+
+      // Decrypt and verify balances
+      const decryptedInitialBalance = await reencryptEuint64(
+        this.signers.alice,
+        this.instance,
+        initialAuctionTokenAlice,
+        this.auctionTokenAddress,
+      );
+      const decryptedFinalBalance = await reencryptEuint64(
+        this.signers.alice,
+        this.instance,
+        finalAuctionTokenAlice,
+        this.auctionTokenAddress,
+      );
+
+      expect(decryptedInitialBalance).to.equal(0n); // All tokens in auction contract
+      expect(decryptedFinalBalance).to.equal(TOKEN_AMOUNT); // All tokens returned
+    });
+
+    it("Should correctly handle refunds when bidding at different prices", async function () {
+      // Place first bid at higher price
+      const firstBidAmount = 50n;
+      let input = this.instance.createEncryptedInput(this.auctionAddress, this.signers.bob.address);
+      input.add64(firstBidAmount);
+      let encryptedBid = await input.encrypt();
+
+      // Get initial balance
+      const initialPaymentTokenBob = await this.paymentToken.balanceOf(this.signers.bob);
+
+      // Place first bid
+      await this.auction.connect(this.signers.bob).bid(encryptedBid.handles[0], encryptedBid.inputProof);
+      const firstBidPrice = await this.auction.getPrice();
+
+      // Check first bid information
+      const [firstBidTokens, firstBidPaid] = await this.auction.connect(this.signers.bob).getUserBid();
+      const decryptedFirstBidTokens = await reencryptEuint64(
+        this.signers.bob,
+        this.instance,
+        firstBidTokens,
+        this.auctionAddress,
+      );
+      const decryptedFirstBidPaid = await reencryptEuint64(
+        this.signers.bob,
+        this.instance,
+        firstBidPaid,
+        this.auctionAddress,
+      );
+      expect(decryptedFirstBidTokens).to.equal(firstBidAmount);
+      expect(decryptedFirstBidPaid).to.equal(firstBidPrice * firstBidAmount);
+
+      // Move time forward to get a lower price
+      await time.increase(3 * 24 * 60 * 60); // Move 3 days forward
+
+      // Place second bid at lower price
+      const secondBidAmount = 30n;
+      input = this.instance.createEncryptedInput(this.auctionAddress, this.signers.bob.address);
+      input.add64(secondBidAmount);
+      encryptedBid = await input.encrypt();
+
+      // Place second bid
+      await this.auction.connect(this.signers.bob).bid(encryptedBid.handles[0], encryptedBid.inputProof);
+      const secondBidPrice = await this.auction.getPrice();
+
+      // Check combined bid information
+      const [totalBidTokens, totalBidPaid] = await this.auction.connect(this.signers.bob).getUserBid();
+      const decryptedTotalBidTokens = await reencryptEuint64(
+        this.signers.bob,
+        this.instance,
+        totalBidTokens,
+        this.auctionAddress,
+      );
+      const decryptedTotalBidPaid = await reencryptEuint64(
+        this.signers.bob,
+        this.instance,
+        totalBidPaid,
+        this.auctionAddress,
+      );
+      expect(decryptedTotalBidTokens).to.equal(firstBidAmount + secondBidAmount);
+      // The total paid should be the sum of tokens at the second (lower) price
+      expect(decryptedTotalBidPaid).to.equal(secondBidPrice * (firstBidAmount + secondBidAmount));
+
+      // Move time to end of auction
+      await time.increase(4 * 24 * 60 * 60 + 1);
+
+      // Claim tokens and refunds
+      await this.auction.connect(this.signers.bob).claimUser();
+      await this.auction.connect(this.signers.alice).claimSeller();
+
+      // Get final balances
+      const finalPaymentTokenBob = await this.paymentToken.balanceOf(this.signers.bob);
+      const finalPaymentTokenAlice = await this.paymentToken.balanceOf(this.signers.alice);
+
+      // Decrypt balances
+      const decryptedInitialPaymentTokenBob = await reencryptEuint64(
+        this.signers.bob,
+        this.instance,
+        initialPaymentTokenBob,
+        this.paymentTokenAddress,
+      );
+      const decryptedFinalPaymentTokenBob = await reencryptEuint64(
+        this.signers.bob,
+        this.instance,
+        finalPaymentTokenBob,
+        this.paymentTokenAddress,
+      );
+      const decryptedFinalPaymentTokenAlice = await reencryptEuint64(
+        this.signers.alice,
+        this.instance,
+        finalPaymentTokenAlice,
+        this.paymentTokenAddress,
+      );
+
+      // Calculate expected payments
+      const finalPrice = await this.auction.getPrice();
+      const totalTokens = firstBidAmount + secondBidAmount;
+      const expectedPayment = (finalPrice * totalTokens) / ethers.parseEther("1");
+
+      // Verify payment token balances
+      expect(decryptedInitialPaymentTokenBob).to.equal(USDC_AMOUNT);
+      expect(decryptedFinalPaymentTokenAlice).to.equal(expectedPayment);
+      expect(decryptedFinalPaymentTokenBob).to.equal(USDC_AMOUNT - expectedPayment);
     });
   });
 });
