@@ -29,17 +29,17 @@ contract DutchAuctionSellingConfidentialERC20 is
     /// @notice Address of the seller
     address payable public immutable seller;
     /// @notice Initial price per token
-    uint public immutable startingPrice;
+    uint64 public immutable startingPrice;
     /// @notice Rate at which the price decreases
-    uint public immutable discountRate;
+    uint64 public immutable discountRate;
     /// @notice Timestamp when the auction starts
-    uint public immutable startAt;
+    uint256 public immutable startAt;
     /// @notice Timestamp when the auction ends
-    uint public immutable expiresAt;
+    uint256 public immutable expiresAt;
     /// @notice Minimum price per token
-    uint public immutable reservePrice;
+    uint64 public immutable reservePrice;
     /// @notice Total amount of tokens being auctioned
-    uint public immutable amount;
+    uint64 public immutable amount;
     /// @notice Flag indicating if the auction has started
     bool public auctionStart = false;
 
@@ -90,12 +90,12 @@ contract DutchAuctionSellingConfidentialERC20 is
     /// @param _biddingTime Duration of the auction in seconds
     /// @param _isStoppable Whether the auction can be stopped manually
     constructor(
-        uint _startingPrice,
-        uint _discountRate,
+        uint64 _startingPrice,
+        uint64 _discountRate,
         ConfidentialERC20 _token,
         ConfidentialERC20 _paymentToken,
-        uint _amount,
-        uint _reservePrice,
+        uint64 _amount,
+        uint64 _reservePrice,
         uint256 _biddingTime,
         bool _isStoppable
     ) Ownable(msg.sender) {
@@ -136,14 +136,14 @@ contract DutchAuctionSellingConfidentialERC20 is
     /// @notice Gets the current price per token
     /// @dev Price decreases linearly over time until it reaches reserve price
     /// @return Current price per token in payment token units
-    function getPrice() public view returns (uint) {
+    function getPrice() public view returns (uint64) {
         if (block.timestamp >= expiresAt) {
             return reservePrice;
         }
 
-        uint timeElapsed = block.timestamp - startAt;
-        uint discount = discountRate * timeElapsed;
-        uint currentPrice = startingPrice > discount ? startingPrice - discount : 0;
+        uint256 timeElapsed = block.timestamp - startAt;
+        uint256 discount = discountRate * timeElapsed;
+        uint64 currentPrice = startingPrice > uint64(discount) ? startingPrice - uint64(discount) : 0;
         return currentPrice > reservePrice ? currentPrice : reservePrice;
     }
 
@@ -160,11 +160,10 @@ contract DutchAuctionSellingConfidentialERC20 is
     /// @param inputProof Zero-knowledge proof for the encrypted input
     function bid(einput encryptedValue, bytes calldata inputProof) external onlyBeforeEnd {
         euint64 newTokenAmount = TFHE.asEuint64(encryptedValue, inputProof);
-        uint currentPricePerToken = getPrice();
-        euint64 currentPrice = TFHE.asEuint64(currentPricePerToken);
+        uint64 currentPricePerToken = getPrice();
 
         // Calculate costs for new tokens
-        euint64 newTokensCost = TFHE.mul(currentPrice, newTokenAmount);
+        euint64 newTokensCost = TFHE.mul(currentPricePerToken, newTokenAmount);
 
         // Handle previous bid adjustments
         Bid storage userBid = bids[msg.sender];
@@ -179,7 +178,7 @@ contract DutchAuctionSellingConfidentialERC20 is
             euint64 oldPaidAmount = userBid.paidAmount;
 
             // Calculate cost of old tokens at new (lower) price
-            euint64 oldTokensAtNewPrice = TFHE.mul(currentPrice, oldTokenAmount);
+            euint64 oldTokensAtNewPrice = TFHE.mul(currentPricePerToken, oldTokenAmount);
 
             // Total tokens = previous tokens + new tokens
             finalTokenAmount = TFHE.add(oldTokenAmount, newTokenAmount);
