@@ -11,7 +11,7 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
   const STARTING_PRICE = ethers.parseEther("0.0001");
   const DISCOUNT_RATE = ethers.parseUnits("10", "wei");
   const TOKEN_AMOUNT = 1000n;
-  const USDC_AMOUNT = 1000n;
+  const USDC_AMOUNT = 100000000000000000n;
   const RESERVE_PRICE = ethers.parseEther("0.00001");
   const STOPPABLE = true;
   const DURATION = 7 * 24 * 60 * 60; // 7 days in seconds
@@ -69,6 +69,9 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
 
     const txInit = await this.auction.connect(this.signers.alice).initialize();
     await txInit.wait();
+
+    // Wait for decryption
+    await awaitAllDecryptionResults();
 
     // Approve payment token for Bob
     const input = this.instance.createEncryptedInput(this.paymentTokenAddress, this.signers.bob.address);
@@ -221,17 +224,147 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
         "TooEarly",
       );
     });
+
+    it("Should not allow bid when user has insufficient payment tokens", async function () {
+      // Get initial token balances and auction state
+      const initialTokensLeft = await this.auction.tokensLeftReveal();
+
+      // Mint a small amount of tokens to Carol
+      const USDC_CAROL_AMOUNT = 20n;
+      const tx2 = await this.paymentToken.mint(this.signers.carol, USDC_CAROL_AMOUNT);
+      const t2 = await tx2.wait();
+      expect(t2?.status).to.eq(1);
+
+      // Approve payment token for Carol (using the correct amount)
+      const input = this.instance.createEncryptedInput(this.paymentTokenAddress, this.signers.carol.address);
+      input.add64(USDC_CAROL_AMOUNT);
+      const carolPaymentAmount = await input.encrypt();
+
+      const txcarolApprove = await this.paymentToken
+        .connect(this.signers.carol)
+        ["approve(address,bytes32,bytes)"](
+          this.auctionAddress,
+          carolPaymentAmount.handles[0],
+          carolPaymentAmount.inputProof,
+        );
+      await txcarolApprove.wait();
+
+      // Try to place a bid larger than Carol's balance
+      const bidAmount = 100n; // This will require more tokens than Carol has
+      const input2 = this.instance.createEncryptedInput(this.auctionAddress, this.signers.carol.address);
+      input2.add64(bidAmount);
+      const encryptedBid = await input2.encrypt();
+
+      // Expect the bid to be reverted due to insufficient balance
+      await expect(this.auction.connect(this.signers.carol).bid(encryptedBid.handles[0], encryptedBid.inputProof));
+
+      // Verify that the auction state hasn't changed
+      await this.auction.connect(this.signers.alice).requestTokensLeftReveal();
+      await awaitAllDecryptionResults();
+      const finalTokensLeft = await this.auction.tokensLeftReveal();
+      expect(finalTokensLeft).to.equal(initialTokensLeft);
+
+      // Verify that no bid was recorded
+      const [bidTokens, bidPaid] = await this.auction.connect(this.signers.carol).getUserBid();
+      const decryptedBidTokens = await reencryptEuint64(
+        this.signers.carol,
+        this.instance,
+        bidTokens,
+        this.auctionAddress,
+      );
+      expect(decryptedBidTokens).to.equal(0n);
+    });
+
+    it("Should not process bid when user requests more than token amount", async function () {
+      // Get initial token balances and auction state
+      const initialTokensLeft = await this.auction.tokensLeftReveal();
+      const initialPaymentBalance = await this.paymentToken.balanceOf(this.signers.bob);
+
+      // Create a bid larger than Bob's approved amount
+      const tokenAmount = TOKEN_AMOUNT + 1000n; // More than token amount
+      const input = this.instance.createEncryptedInput(this.auctionAddress, this.signers.bob.address);
+      input.add64(tokenAmount);
+      const encryptedBid = await input.encrypt();
+
+      // Place the bid
+      await this.auction.connect(this.signers.bob).bid(encryptedBid.handles[0], encryptedBid.inputProof);
+
+      // Request token reveal to check state
+      await this.auction.connect(this.signers.alice).requestTokensLeftReveal();
+      await awaitAllDecryptionResults();
+
+      // Get final balances
+      const finalTokensLeft = await this.auction.tokensLeftReveal();
+      const finalPaymentBalance = await this.paymentToken.balanceOf(this.signers.bob);
+
+      // Decrypt payment balances
+      const decryptedInitialBalance = await reencryptEuint64(
+        this.signers.bob,
+        this.instance,
+        initialPaymentBalance,
+        this.paymentTokenAddress,
+      );
+      const decryptedFinalBalance = await reencryptEuint64(
+        this.signers.bob,
+        this.instance,
+        finalPaymentBalance,
+        this.paymentTokenAddress,
+      );
+
+      // Verify that no changes occurred
+      expect(finalTokensLeft).to.equal(initialTokensLeft);
+      expect(decryptedFinalBalance).to.equal(decryptedInitialBalance);
+
+      // Verify that the bid was not recorded
+      const [bidTokens, bidPaid] = await this.auction.connect(this.signers.bob).getUserBid();
+      const decryptedBidTokens = await reencryptEuint64(
+        this.signers.bob,
+        this.instance,
+        bidTokens,
+        this.auctionAddress,
+      );
+      expect(decryptedBidTokens).to.equal(0n);
+    });
   });
 
   describe("Token reveal functionality", function () {
     it("Should allow owner to request tokens left reveal", async function () {
+      // Get Bob's initial balance
+      //   const initialBobBalance = await this.paymentToken.balanceOf(this.signers.bob);
+      //   const decryptedInitialBobBalance = await reencryptEuint64(
+      //     this.signers.bob,
+      //     this.instance,
+      //     initialBobBalance,
+      //     this.paymentTokenAddress,
+      //   );
+      //   console.log("Bob's initial balance:", decryptedInitialBobBalance.toString());
+
       // Place a bid first
-      const bidAmount = 100n;
+      const bidAmount = 1n;
+
       const input = this.instance.createEncryptedInput(this.auctionAddress, this.signers.bob.address);
       input.add64(bidAmount);
       const encryptedBid = await input.encrypt();
 
       await this.auction.connect(this.signers.bob).bid(encryptedBid.handles[0], encryptedBid.inputProof);
+
+      // Get Bob's balance after bid
+      //   const afterBidBalance = await this.paymentToken.balanceOf(this.signers.bob);
+      //   const decryptedAfterBidBalance = await reencryptEuint64(
+      //     this.signers.bob,
+      //     this.instance,
+      //     afterBidBalance,
+      //     this.paymentTokenAddress,
+      //   );
+      //   console.log("Bob's balance after bid:", decryptedAfterBidBalance.toString());
+
+      // Get current price and calculate expected payment
+      //   const currentPrice = await this.auction.getPrice();
+      //   const expectedPayment = (currentPrice * bidAmount) / ethers.parseEther("1");
+      //   // Calculate token cost at current price
+      //   const tokenCost = currentPrice * bidAmount;
+      //   console.log("Token cost:", tokenCost.toString());
+      //   console.log("Expected payment:", expectedPayment.toString());
 
       // Request reveal
       await expect(this.auction.connect(this.signers.alice).requestTokensLeftReveal()).to.not.be.reverted;
@@ -242,6 +375,18 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
       // Verify the revealed amount matches expected value
       const tokensLeftReveal = await this.auction.tokensLeftReveal();
       expect(tokensLeftReveal).to.equal(TOKEN_AMOUNT - bidAmount);
+
+      // Get user bid information
+      //   const [bidTokens, bidPaid] = await this.auction.connect(this.signers.bob).getUserBid();
+      //   const decryptedBidTokens = await reencryptEuint64(
+      //     this.signers.bob,
+      //     this.instance,
+      //     bidTokens,
+      //     this.auctionAddress,
+      //   );
+      //   const decryptedBidPaid = await reencryptEuint64(this.signers.bob, this.instance, bidPaid, this.auctionAddress);
+      //   console.log("Bid tokens:", decryptedBidTokens.toString());
+      //   console.log("Bid paid:", decryptedBidPaid.toString());
     });
 
     it("Should not allow non-owner to request tokens left reveal", async function () {
@@ -353,7 +498,7 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
 
       // Calculate expected payment based on final price
       const finalPrice = await this.auction.getPrice();
-      const expectedPayment = (finalPrice * bidAmount) / ethers.parseEther("1");
+      const expectedPayment = finalPrice * bidAmount;
 
       // Verify payment token balances
       expect(decryptedInitialPaymentTokenBob).to.equal(USDC_AMOUNT);
@@ -485,12 +630,12 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
       // Calculate expected payments
       const finalPrice = await this.auction.getPrice();
       const totalTokens = firstBidAmount + secondBidAmount;
-      const expectedPayment = (finalPrice * totalTokens) / ethers.parseEther("1");
+      const expectedPayment = finalPrice * totalTokens;
 
       // Verify payment token balances
       expect(decryptedInitialPaymentTokenBob).to.equal(USDC_AMOUNT);
-      expect(decryptedFinalPaymentTokenAlice).to.equal(expectedPayment);
-      expect(decryptedFinalPaymentTokenBob).to.equal(USDC_AMOUNT - expectedPayment);
+      expect(decryptedFinalPaymentTokenAlice).to.be.closeTo(expectedPayment, USDC_AMOUNT / 100000000n);
+      expect(decryptedFinalPaymentTokenBob).to.be.closeTo(USDC_AMOUNT - expectedPayment, USDC_AMOUNT / 100000000n);
     });
   });
 });

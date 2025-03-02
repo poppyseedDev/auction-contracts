@@ -34,6 +34,40 @@ This contract implements a Dutch auction mechanism where:
    - After auction ends, users can claim their tokens and any refunds
    - Seller can claim proceeds and unsold tokens
 
+## Mathematics
+price = token_amount * token_price
+
+P1 := price at point 1
+P2 := price at point 2
+TA1 := token amount at point 1
+TA2 := token amount at point 2
+TP1 := token price at point 1
+TP2 := token price at point 2
+EP := end price or total price you have to pay
+R := refund price
+TA := total token amount
+
+TA = TA1 + TA2
+
+P1 = TA1 * TP1
+P2 = TA2 * TP2
+EP = TA * TP2
+EP = TA1 * TP2 + TA2 * TP2
+
+P1 + X = EP 
+X := amount that needs to be refunded or the amount which needs to paid
+
+if X > 0: 
+// additional amount user needs to pay
+X = | TA1 * TP1 + TA1 * TP2 - TA1 * TP1 |
+
+if X < 0:
+// amount that needs to be refunded
+X = | TA1 * TP1 - TA1 * TP1 + TA1 * TP2 |
+
+
+
+
 ## Functions
 
 ### Core Functions
