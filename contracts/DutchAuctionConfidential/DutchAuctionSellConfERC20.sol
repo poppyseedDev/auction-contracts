@@ -196,95 +196,83 @@ contract DutchAuctionSellingConfidentialERC20 is
             euint64 oldTokensAtNewPrice = TFHE.mul(currentPricePerToken, oldTokenAmount);
             // Potential amountToTransfer = total token amount at new price - oldPaidAmount
             // euint64 amountToTransfer = TFHE.sub(TFHE.add(oldTokensAtNewPrice, newTokensCost), oldPaidAmount);
-            // TODO: check if amountToTransfer is negative or not
-            // ------
-            // unsure part
-            euint64 totalTokenAmount = TFHE.add(oldTokensAtNewPrice, newTokensCost);
+
+            euint64 totalTokenPrice = TFHE.add(oldTokensAtNewPrice, newTokensCost);
             // if totalTokenAmount greater than oldPaidAmount no refund else refund
-            ebool refundNotNeeded = TFHE.ge(totalTokenAmount, oldPaidAmount);
+            ebool refundNotNeeded = TFHE.ge(totalTokenPrice, oldPaidAmount);
             euint64 amountToTransfer = TFHE.select(
                 refundNotNeeded,
-                TFHE.sub(totalTokenAmount, oldPaidAmount),
+                TFHE.sub(totalTokenPrice, oldPaidAmount),
                 TFHE.asEuint64(0)
             );
             euint64 amountToRefund = TFHE.select(
                 refundNotNeeded,
                 TFHE.asEuint64(0),
-                TFHE.sub(oldPaidAmount, totalTokenAmount)
+                TFHE.sub(oldPaidAmount, totalTokenPrice)
             );
-            // -----
 
             // Verify enough tokens are available
             newTokensCost = TFHE.select(enoughTokens, newTokensCost, TFHE.asEuint64(0));
             amountToTransfer = TFHE.select(enoughTokens, amountToTransfer, TFHE.asEuint64(0));
             amountToRefund = TFHE.select(enoughTokens, amountToRefund, TFHE.asEuint64(0));
 
-            // Transfer payment for new tokens only
-            euint64 balanceBefore = paymentToken.balanceOf(address(this));
-            TFHE.allowTransient(amountToTransfer, address(paymentToken));
-            paymentToken.transferFrom(msg.sender, address(this), amountToTransfer);
-            euint64 balanceAfter = paymentToken.balanceOf(address(this));
-            euint64 sentBalance = TFHE.sub(balanceAfter, balanceBefore);
+            euint64 sentBalance = _handleTransfer(amountToTransfer);
+            _handleRefund(amountToRefund);
 
-            // Potential amount to refund
-            TFHE.allowTransient(amountToRefund, address(paymentToken));
-            paymentToken.transfer(msg.sender, amountToRefund);
+            // 0 or newTokenAmount depending if the transfer was successful or refund was successful
+            ebool txSuccess = TFHE.or(TFHE.ne(sentBalance, 0), TFHE.ne(amountToRefund, 0));
+            newTokenAmount = TFHE.select(txSuccess, newTokenAmount, TFHE.asEuint64(0));
 
-            // 0 or newTokenAmount depending if the transfer was successful or refund was greater than 0
-            newTokenAmount = TFHE.select(
-                TFHE.or(TFHE.ne(sentBalance, 0), TFHE.ne(amountToRefund, 0)),
-                newTokenAmount,
-                TFHE.asEuint64(0)
-            );
+            totalTokenPrice = TFHE.select(txSuccess, totalTokenPrice, oldPaidAmount);
 
             // Total tokens = previous tokens + new tokens
             euint64 totalTokens = TFHE.add(newTokenAmount, oldTokenAmount);
-            // Final cost = (old tokens × new price) + (new tokens × sent balance)
-            // = sentBalance + oldPaidAmount
-            // if transfer unsuccessful = oldPaidAmount
-            euint64 finalCost = TFHE.add(sentBalance, oldPaidAmount);
 
-            // Update bid information
-            bids[msg.sender].tokenAmount = totalTokens;
-            bids[msg.sender].paidAmount = finalCost;
-            TFHE.allowThis(bids[msg.sender].tokenAmount);
-            TFHE.allowThis(bids[msg.sender].paidAmount);
-            TFHE.allow(bids[msg.sender].tokenAmount, msg.sender);
-            TFHE.allow(bids[msg.sender].paidAmount, msg.sender);
-
-            // Update remaining tokens
-            tokensLeft = TFHE.sub(tokensLeft, newTokenAmount);
-            TFHE.allowThis(tokensLeft);
-            TFHE.allow(tokensLeft, owner());
+            _updateBidInfo(totalTokens, totalTokenPrice, newTokenAmount);
         } else {
             // Verify enough tokens are available
             newTokensCost = TFHE.select(enoughTokens, newTokensCost, TFHE.asEuint64(0));
             newTokenAmount = TFHE.select(enoughTokens, newTokenAmount, TFHE.asEuint64(0));
 
-            // Transfer payment for new tokens only
-            euint64 balanceBefore = paymentToken.balanceOf(address(this));
-            TFHE.allowTransient(newTokensCost, address(paymentToken));
-            paymentToken.transferFrom(msg.sender, address(this), newTokensCost);
-            euint64 balanceAfter = paymentToken.balanceOf(address(this));
-            euint64 sentBalance = TFHE.sub(balanceAfter, balanceBefore);
+            // Extract transfer logic into helper function
+            euint64 sentBalance = _handleTransfer(newTokensCost);
 
             newTokenAmount = TFHE.select(TFHE.ne(sentBalance, 0), newTokenAmount, TFHE.asEuint64(0));
 
-            // Update bid information
-            bids[msg.sender].tokenAmount = newTokenAmount;
-            bids[msg.sender].paidAmount = sentBalance;
-            TFHE.allowThis(bids[msg.sender].tokenAmount);
-            TFHE.allowThis(bids[msg.sender].paidAmount);
-            TFHE.allow(bids[msg.sender].tokenAmount, msg.sender);
-            TFHE.allow(bids[msg.sender].paidAmount, msg.sender);
-
-            // Update remaining tokens
-            tokensLeft = TFHE.sub(tokensLeft, newTokenAmount);
-            TFHE.allowThis(tokensLeft);
-            TFHE.allow(tokensLeft, owner());
+            _updateBidInfo(newTokenAmount, sentBalance, newTokenAmount);
         }
 
         emit BidSubmitted(msg.sender, currentPricePerToken);
+    }
+
+    /// @dev Helper function to handle token transfers
+    function _handleTransfer(euint64 amountToTransfer) private returns (euint64) {
+        euint64 balanceBefore = paymentToken.balanceOf(address(this));
+        TFHE.allowTransient(amountToTransfer, address(paymentToken));
+        paymentToken.transferFrom(msg.sender, address(this), amountToTransfer);
+        euint64 balanceAfter = paymentToken.balanceOf(address(this));
+        return TFHE.sub(balanceAfter, balanceBefore);
+    }
+
+    /// @dev Helper function to handle refunds
+    function _handleRefund(euint64 amountToTransfer) private {
+        TFHE.allowTransient(amountToTransfer, address(paymentToken));
+        paymentToken.transfer(msg.sender, amountToTransfer);
+    }
+
+    /// @dev Helper function to update bid information
+    function _updateBidInfo(euint64 totalTokenAmount, euint64 totalPaidAmount, euint64 newTokenAmount) private {
+        bids[msg.sender].tokenAmount = totalTokenAmount;
+        bids[msg.sender].paidAmount = totalPaidAmount;
+        TFHE.allowThis(bids[msg.sender].tokenAmount);
+        TFHE.allowThis(bids[msg.sender].paidAmount);
+        TFHE.allow(bids[msg.sender].tokenAmount, msg.sender);
+        TFHE.allow(bids[msg.sender].paidAmount, msg.sender);
+
+        // Update remaining tokens
+        tokensLeft = TFHE.sub(tokensLeft, newTokenAmount);
+        TFHE.allowThis(tokensLeft);
+        TFHE.allow(tokensLeft, owner());
     }
 
     /// @notice Claim tokens and refund for a bidder after auction ends

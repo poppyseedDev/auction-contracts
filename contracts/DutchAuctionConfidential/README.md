@@ -35,38 +35,69 @@ This contract implements a Dutch auction mechanism where:
    - Seller can claim proceeds and unsold tokens
 
 ## Mathematics
+
+**Basic formula for price calculation:**
+```
 price = token_amount * token_price
+```
 
-P1 := price at point 1
-P2 := price at point 2
-TA1 := token amount at point 1
-TA2 := token amount at point 2
-TP1 := token price at point 1
-TP2 := token price at point 2
-EP := end price or total price you have to pay
-R := refund price
-TA := total token amount
+### Variable Definitions
+ - P1 := price at point 1
+ - P2 := price at point 2
+ - TA1 := token amount at point 1
+ - TA2 := token amount at point 2
+ - TP1 := token price at point 1
+ - TP2 := token price at point 2
+ - P_A1P2 := tokens bought at point 1 priced at point 2 
+ - EP := end price or total price you have to pay
+ - R := refund price
+ - TA := total token amount
+ - X := amount that needs to be refunded or the amount which needs to paid
 
-TA = TA1 + TA2
+### Key Equations
 
-P1 = TA1 * TP1
-P2 = TA2 * TP2
-EP = TA * TP2
-EP = TA1 * TP2 + TA2 * TP2
+1. **Token Amount Relationship**
+```
+TA = TA1 + TA2    // Total tokens is sum of bid amounts
+```
 
-P1 + X = EP 
-X := amount that needs to be refunded or the amount which needs to paid
+2. **Price Calculations**
+```
+P1 = TA1 * TP1    // First bid price
+P2 = TA2 * TP2    // Second bid price
+EP = TA * TP2     // Final price at lower rate
+   = (TA1 + TA2) * TP2
+```
 
-if X > 0: 
-// additional amount user needs to pay
-X = | TA1 * TP1 + TA1 * TP2 - TA1 * TP1 |
+3. **Price Adjustment Calculation**
+```
+X = EP - P1       // Adjustment needed to reconcile prices
+  = (TA1 * TP2 + TA2 * TP2) - (TA1 * TP1)
+```
 
-if X < 0:
-// amount that needs to be refunded
-X = | TA1 * TP1 - TA1 * TP1 + TA1 * TP2 |
+### Calculating the Adjustment (X)
 
 
+The adjustment amount X is calculated as:
+`P1 + X = EP`
 
+Therefore:
+```
+X = EP - P1
+X = TA1 * TP2 + TA2 * TP2 - TA1 * TP1
+```
+
+If X > 0: Additional payment is required which equals:
+```
+X = | P_A1P2 + P2 - P1 |
+X = | TA1 * TP2 + TA2 * TP2 - TA1 * TP1 |
+```
+
+If X < 0: Refund amount that is due to the user:
+```
+X = | P1 - (P_A1P2 + P2) |
+X = | TA1 * TP1 - TA1 * TP2 - TA2 * TP2 |
+```
 
 ## Functions
 

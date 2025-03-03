@@ -9,7 +9,7 @@ import { getSigners, initSigners } from "../signers";
 
 describe("DutchAuctionSellingConfidentialERC20", function () {
   const STARTING_PRICE = ethers.parseEther("0.0001");
-  const DISCOUNT_RATE = ethers.parseUnits("10", "wei");
+  const DISCOUNT_RATE = ethers.parseEther("0.0000000001");
   const TOKEN_AMOUNT = 1000n;
   const USDC_AMOUNT = 100000000000000000n;
   const RESERVE_PRICE = ethers.parseEther("0.00001");
@@ -113,7 +113,7 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
   describe("Price calculation", function () {
     it("Should return starting price at start", async function () {
       const price = await this.auction.getPrice();
-      expect(price).to.be.closeTo(STARTING_PRICE, 100); // allows for small differences
+      expect(price).to.be.closeTo(STARTING_PRICE, 1000000000); // allows for small differences
     });
 
     it("Should decrease price over time", async function () {
@@ -121,7 +121,7 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
       await time.increase(oneDay);
 
       const expectedPrice = STARTING_PRICE - DISCOUNT_RATE * oneDay;
-      expect(await this.auction.getPrice()).to.be.closeTo(expectedPrice, 100);
+      expect(await this.auction.getPrice()).to.be.closeTo(expectedPrice, 1000000000);
     });
 
     it("Should not go below reserve price", async function () {
@@ -636,6 +636,185 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
       expect(decryptedInitialPaymentTokenBob).to.equal(USDC_AMOUNT);
       expect(decryptedFinalPaymentTokenAlice).to.be.closeTo(expectedPayment, USDC_AMOUNT / 100000000n);
       expect(decryptedFinalPaymentTokenBob).to.be.closeTo(USDC_AMOUNT - expectedPayment, USDC_AMOUNT / 100000000n);
+    });
+  });
+
+  describe("Price calculations and refunds", function () {
+    it("Should correctly calculate refunds when bidding at different times", async function () {
+      // First bid at initial price
+      const firstBidAmount = 50n;
+      let input = this.instance.createEncryptedInput(this.auctionAddress, this.signers.bob.address);
+      input.add64(firstBidAmount);
+      let encryptedBid = await input.encrypt();
+
+      // Get initial balance and price
+      const initialPrice = await this.auction.getPrice();
+      const initialPaymentTokenBob = await this.paymentToken.balanceOf(this.signers.bob.address);
+      const decryptedInitialBalance = await reencryptEuint64(
+        this.signers.bob,
+        this.instance,
+        initialPaymentTokenBob,
+        this.paymentTokenAddress,
+      );
+
+      // Place first bid
+      await this.auction.connect(this.signers.bob).bid(encryptedBid.handles[0], encryptedBid.inputProof);
+
+      // Move time forward to get a lower price (3 days)
+      const threeDays = 6n * 24n * 60n * 60n;
+      await time.increase(threeDays);
+
+      // Second bid at lower price
+      const secondBidAmount = 30n;
+      input = this.instance.createEncryptedInput(this.auctionAddress, this.signers.bob.address);
+      input.add64(secondBidAmount);
+      encryptedBid = await input.encrypt();
+
+      // Get price before second bid
+      const secondBidPrice = await this.auction.getPrice();
+
+      // Place second bid
+      await this.auction.connect(this.signers.bob).bid(encryptedBid.handles[0], encryptedBid.inputProof);
+
+      // Get final balances
+      const finalPaymentTokenBob = await this.paymentToken.balanceOf(this.signers.bob.address);
+      const decryptedFinalBalance = await reencryptEuint64(
+        this.signers.bob,
+        this.instance,
+        finalPaymentTokenBob,
+        this.paymentTokenAddress,
+      );
+
+      // Calculate expected costs
+      const expectedFirstBidCost = initialPrice * firstBidAmount;
+      const expectedTotalCost = secondBidPrice * (firstBidAmount + secondBidAmount);
+      const expectedRefund = expectedFirstBidCost - expectedTotalCost;
+
+      //   console.log("initial price: ", initialPrice);
+      //   console.log("secondBidPrice: ", secondBidPrice);
+      //   console.log("expectedTotalCost: ", expectedTotalCost);
+      //   console.log("expectedRefund: ", expectedRefund);
+
+      // Verify the total amount paid
+      expect(decryptedInitialBalance - decryptedFinalBalance).to.be.closeTo(
+        expectedTotalCost,
+        expectedTotalCost / 100000n,
+      );
+
+      // Get bid information to verify token amounts
+      const [bidTokens, bidPaid] = await this.auction.connect(this.signers.bob).getUserBid();
+      const decryptedBidTokens = await reencryptEuint64(
+        this.signers.bob,
+        this.instance,
+        bidTokens,
+        this.auctionAddress,
+      );
+      const decryptedBidPaid = await reencryptEuint64(this.signers.bob, this.instance, bidPaid, this.auctionAddress);
+      console.log("decryptedBidPaid", decryptedBidPaid);
+
+      // Verify final state
+      expect(decryptedBidTokens).to.equal(firstBidAmount + secondBidAmount);
+      expect(decryptedBidPaid).to.be.closeTo(expectedTotalCost, expectedTotalCost / 100000n);
+    });
+
+    it("Should correctly handle price adjustments at auction end", async function () {
+      // Place bid near start
+      const bidAmount = 100n;
+      const input = this.instance.createEncryptedInput(this.auctionAddress, this.signers.bob.address);
+      input.add64(bidAmount);
+      const encryptedBid = await input.encrypt();
+
+      const initialPrice = await this.auction.getPrice();
+      const initialPaymentTokenBob = await this.paymentToken.balanceOf(this.signers.bob.address);
+      const decryptedInitialBalance = await reencryptEuint64(
+        this.signers.bob,
+        this.instance,
+        initialPaymentTokenBob,
+        this.paymentTokenAddress,
+      );
+
+      // Place bid
+      await this.auction.connect(this.signers.bob).bid(encryptedBid.handles[0], encryptedBid.inputProof);
+
+      // Move time to end of auction
+      await time.increase(7 * 24 * 60 * 60 + 1);
+
+      // Get final price
+      const finalPrice = await this.auction.getPrice();
+      expect(finalPrice).to.equal(RESERVE_PRICE);
+
+      // Claim tokens
+      await this.auction.connect(this.signers.bob).claimUser();
+
+      // Get final balance
+      const finalPaymentTokenBob = await this.paymentToken.balanceOf(this.signers.bob.address);
+      const decryptedFinalBalance = await reencryptEuint64(
+        this.signers.bob,
+        this.instance,
+        finalPaymentTokenBob,
+        this.paymentTokenAddress,
+      );
+
+      // Calculate expected costs and refund
+      const initialCost = initialPrice * bidAmount;
+      const finalCost = finalPrice * bidAmount;
+      const expectedRefund = initialCost - finalCost;
+
+      // Verify refund amount
+      expect(decryptedInitialBalance - decryptedFinalBalance).to.equal(finalCost);
+    });
+
+    it("Should handle multiple bids with correct price calculations", async function () {
+      // First bid
+      const firstBidAmount = 30n;
+      let input = this.instance.createEncryptedInput(this.auctionAddress, this.signers.bob.address);
+      input.add64(firstBidAmount);
+      let encryptedBid = await input.encrypt();
+
+      const firstPrice = await this.auction.getPrice();
+      await this.auction.connect(this.signers.bob).bid(encryptedBid.handles[0], encryptedBid.inputProof);
+
+      // Move forward 1 day
+      await time.increase(24 * 60 * 60);
+
+      // Second bid
+      const secondBidAmount = 20n;
+      input = this.instance.createEncryptedInput(this.auctionAddress, this.signers.bob.address);
+      input.add64(secondBidAmount);
+      encryptedBid = await input.encrypt();
+
+      const secondPrice = await this.auction.getPrice();
+      await this.auction.connect(this.signers.bob).bid(encryptedBid.handles[0], encryptedBid.inputProof);
+
+      // Move forward 2 more days
+      await time.increase(2 * 24 * 60 * 60);
+
+      // Third bid
+      const thirdBidAmount = 25n;
+      input = this.instance.createEncryptedInput(this.auctionAddress, this.signers.bob.address);
+      input.add64(thirdBidAmount);
+      encryptedBid = await input.encrypt();
+
+      const thirdPrice = await this.auction.getPrice();
+      await this.auction.connect(this.signers.bob).bid(encryptedBid.handles[0], encryptedBid.inputProof);
+
+      // Get bid information
+      const [bidTokens, bidPaid] = await this.auction.connect(this.signers.bob).getUserBid();
+      const decryptedBidTokens = await reencryptEuint64(
+        this.signers.bob,
+        this.instance,
+        bidTokens,
+        this.auctionAddress,
+      );
+      const decryptedBidPaid = await reencryptEuint64(this.signers.bob, this.instance, bidPaid, this.auctionAddress);
+
+      // Calculate expected values
+      const totalTokens = firstBidAmount + secondBidAmount + thirdBidAmount;
+      const expectedPaid = thirdPrice * totalTokens;
+
+      // Verify final state
+      expect(decryptedBidTokens).to.equal(totalTokens);
+      expect(decryptedBidPaid).to.be.closeTo(expectedPaid, expectedPaid / 100000n);
     });
   });
 });
