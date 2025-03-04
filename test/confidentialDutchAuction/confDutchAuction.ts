@@ -275,7 +275,7 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
       expect(decryptedBidTokens).to.equal(0n);
     });
 
-    it("Should not process bid when user requests more than token amount", async function () {
+    it("Should process bid only up to token amount and not over", async function () {
       // Get initial token balances and auction state
       const initialTokensLeft = await this.auction.tokensLeftReveal();
       const initialPaymentBalance = await this.paymentToken.balanceOf(this.signers.bob);
@@ -310,10 +310,13 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
         finalPaymentBalance,
         this.paymentTokenAddress,
       );
+      const currentPrice = await this.auction.getPrice();
+
+      const cost = TOKEN_AMOUNT * currentPrice;
 
       // Verify that no changes occurred
-      expect(finalTokensLeft).to.equal(initialTokensLeft);
-      expect(decryptedFinalBalance).to.equal(decryptedInitialBalance);
+      expect(finalTokensLeft).to.equal(0);
+      expect(decryptedInitialBalance - decryptedFinalBalance).to.be.closeTo(cost, 500000000000);
 
       // Verify that the bid was not recorded
       const [bidTokens, bidPaid] = await this.auction.connect(this.signers.bob).getUserBid();
@@ -323,7 +326,7 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
         bidTokens,
         this.auctionAddress,
       );
-      expect(decryptedBidTokens).to.equal(0n);
+      expect(decryptedBidTokens).to.equal(TOKEN_AMOUNT);
     });
   });
 

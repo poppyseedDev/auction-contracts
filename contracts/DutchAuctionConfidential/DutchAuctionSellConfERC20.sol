@@ -183,70 +183,57 @@ contract DutchAuctionSellingConfidentialERC20 is
         uint64 currentPricePerToken = getPrice();
 
         // Calculate costs for new tokens
-        euint64 newTokensCost = TFHE.mul(currentPricePerToken, newTokenAmount);
+        // euint64 newTokensCost = TFHE.mul(currentPricePerToken, newTokenAmount);
+
+        // Calculate how many new tokens can be bought
+        newTokenAmount = TFHE.min(newTokenAmount, tokensLeft);
 
         // Handle previous bid adjustments
         Bid storage userBid = bids[msg.sender];
-        // Verify enough tokens are available
-        ebool enoughTokens = TFHE.le(newTokenAmount, tokensLeft);
 
         if (TFHE.isInitialized(userBid.tokenAmount)) {
-            // Previous bid exists - calculate price difference
-            euint64 oldTokenAmount = userBid.tokenAmount;
+            // Previous bid exists - calculate total tokens bought and amount paid
+            euint64 totalTokenAmount = TFHE.add(newTokenAmount, userBid.tokenAmount);
             euint64 oldPaidAmount = userBid.paidAmount;
 
-            // Calculate cost of old tokens at new (lower) price
-            euint64 oldTokensAtNewPrice = TFHE.mul(currentPricePerToken, oldTokenAmount);
+            // Calculate cost of total token at current price
+            euint64 totalCostAtNewPrice = TFHE.mul(currentPricePerToken, totalTokenAmount);
 
-            euint64 totalTokenPrice = TFHE.add(oldTokensAtNewPrice, newTokensCost);
-            // if totalTokenAmount greater than oldPaidAmount extra payment and no refund needed else refund
-            ebool refundNotNeeded = TFHE.ge(totalTokenPrice, oldPaidAmount);
-            euint64 amountToTransfer = TFHE.select(
-                refundNotNeeded,
-                TFHE.sub(totalTokenPrice, oldPaidAmount),
-                TFHE.asEuint64(0)
-            );
-            euint64 amountToRefund = TFHE.select(
-                refundNotNeeded,
-                TFHE.asEuint64(0),
-                TFHE.sub(oldPaidAmount, totalTokenPrice)
-            );
+            // Calculate difference between paid already and new price
+            ebool totalBiggerOld = TFHE.ge(totalCostAtNewPrice, oldPaidAmount);
+            euint64 paidDiff = TFHE.sub(totalCostAtNewPrice, oldPaidAmount);
+            euint64 amountToTransfer = TFHE.select(totalBiggerOld, paidDiff, TFHE.asEuint64(0));
+            euint64 amountToRefund = TFHE.sub(amountToTransfer, paidDiff);
 
-            // Verify enough tokens are available
-            newTokensCost = TFHE.select(enoughTokens, newTokensCost, TFHE.asEuint64(0));
-            amountToTransfer = TFHE.select(enoughTokens, amountToTransfer, TFHE.asEuint64(0));
-            amountToRefund = TFHE.select(enoughTokens, amountToRefund, TFHE.asEuint64(0));
+            // Transfer money, and only if OK send the tokens and process refund
+            euint64 transferredBalance = _handleTransfer(amountToTransfer);
+            ebool transferOK = TFHE.eq(transferredBalance, amountToTransfer);
 
-            euint64 sentBalance = _handleTransfer(amountToTransfer);
-            _handleRefund(amountToRefund);
+            // Transfer tokens and refund
+            euint64 finalTokenAmountToTransfer = TFHE.select(transferOK, newTokenAmount, TFHE.asEuint64(0));
+            _handleTokenTransfer(finalTokenAmountToTransfer);
 
-            // 0 or newTokenAmount depending if the transfer was successful or refund was successful
-            ebool txSuccess = TFHE.or(TFHE.ne(sentBalance, 0), TFHE.ne(amountToRefund, 0));
-            newTokenAmount = TFHE.select(txSuccess, newTokenAmount, TFHE.asEuint64(0));
+            euint64 finalAmountToRefund = TFHE.select(transferOK, amountToRefund, TFHE.asEuint64(0));
+            _handleRefund(finalAmountToRefund);
 
-            totalTokenPrice = TFHE.select(txSuccess, totalTokenPrice, oldPaidAmount);
-
-            // Total tokens = previous tokens + new tokens
-            euint64 totalTokens = TFHE.add(newTokenAmount, oldTokenAmount);
-
-            // Optional *depending on contract design choise* transfer tokens to user
-            _handleTokenTransfer(newTokenAmount);
-
-            _updateBidInfo(totalTokens, totalTokenPrice, newTokenAmount);
+            // Update bid
+            euint64 finalTotalTokens = TFHE.select(transferOK, totalTokenAmount, userBid.tokenAmount);
+            euint64 finalTotalCost = TFHE.select(transferOK, totalCostAtNewPrice, userBid.paidAmount);
+            _updateBidInfo(finalTotalTokens, finalTotalCost, finalTokenAmountToTransfer);
         } else {
-            // Verify enough tokens are available
-            newTokensCost = TFHE.select(enoughTokens, newTokensCost, TFHE.asEuint64(0));
-            newTokenAmount = TFHE.select(enoughTokens, newTokenAmount, TFHE.asEuint64(0));
+            // Amount of money to pay
+            euint64 amountToTransfer = TFHE.mul(currentPricePerToken, newTokenAmount);
 
-            // Extract transfer logic into helper function
-            euint64 sentBalance = _handleTransfer(newTokensCost);
+            // Transfer money, and only if OK send the tokens
+            euint64 transferredBalance = _handleTransfer(amountToTransfer);
+            ebool transferOK = TFHE.eq(transferredBalance, amountToTransfer);
 
-            newTokenAmount = TFHE.select(TFHE.ne(sentBalance, 0), newTokenAmount, TFHE.asEuint64(0));
+            // Transfer tokens
+            euint64 tokensToTransfer = TFHE.select(transferOK, newTokenAmount, TFHE.asEuint64(0));
+            _handleTokenTransfer(tokensToTransfer);
 
-            // Optional *depending on contract design choise* transfer tokens to user
-            _handleTokenTransfer(newTokenAmount);
-
-            _updateBidInfo(newTokenAmount, sentBalance, newTokenAmount);
+            // Update bid
+            _updateBidInfo(tokensToTransfer, transferredBalance, tokensToTransfer);
         }
 
         emit BidSubmitted(msg.sender, currentPricePerToken);
