@@ -206,7 +206,7 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
       await time.increase(7 * 24 * 60 * 60 + 1);
 
       // Claim tokens
-      await expect(this.auction.connect(this.signers.bob).claimUser()).to.not.be.reverted;
+      await expect(this.auction.connect(this.signers.bob).claimUserRefund()).to.not.be.reverted;
     });
 
     it("Should not allow claiming before auction ends", async function () {
@@ -219,7 +219,7 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
       await this.auction.connect(this.signers.bob).bid(encryptedBid.handles[0], encryptedBid.inputProof);
 
       // Try to claim immediately
-      await expect(this.auction.connect(this.signers.bob).claimUser()).to.be.revertedWithCustomError(
+      await expect(this.auction.connect(this.signers.bob).claimUserRefund()).to.be.revertedWithCustomError(
         this.auction,
         "TooEarly",
       );
@@ -441,8 +441,10 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
       // Move time forward to end the auction
       await time.increase(7 * 24 * 60 * 60 + 1);
 
-      // Claim tokens
-      await this.auction.connect(this.signers.bob).claimUser();
+      // Claim potential refunds
+      await this.auction.connect(this.signers.bob).claimUserRefund();
+      // Wait for refunds to process
+      await time.increase(15 * 24 * 60 * 60 + 1);
       await this.auction.connect(this.signers.alice).claimSeller();
 
       // Get final balances
@@ -599,8 +601,13 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
       // Move time to end of auction
       await time.increase(4 * 24 * 60 * 60 + 1);
 
-      // Claim tokens and refunds
-      await this.auction.connect(this.signers.bob).claimUser();
+      // Claim refunds
+      await this.auction.connect(this.signers.bob).claimUserRefund();
+
+      // Wait for refunds to process
+      await time.increase(15 * 24 * 60 * 60 + 1);
+
+      // Claim seller
       await this.auction.connect(this.signers.alice).claimSeller();
 
       // Get final balances
@@ -744,7 +751,7 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
       expect(finalPrice).to.equal(RESERVE_PRICE);
 
       // Claim tokens
-      await this.auction.connect(this.signers.bob).claimUser();
+      await this.auction.connect(this.signers.bob).claimUserRefund();
 
       // Get final balance
       const finalPaymentTokenBob = await this.paymentToken.balanceOf(this.signers.bob.address);
@@ -815,6 +822,47 @@ describe("DutchAuctionSellingConfidentialERC20", function () {
       // Verify final state
       expect(decryptedBidTokens).to.equal(totalTokens);
       expect(decryptedBidPaid).to.be.closeTo(expectedPaid, expectedPaid / 100000n);
+    });
+  });
+
+  describe("Edge cases", function () {
+    it("Should not accept zero amount bids", async function () {
+      const bidAmount = 0n;
+      const input = this.instance.createEncryptedInput(this.auctionAddress, this.signers.bob.address);
+      input.add64(bidAmount);
+      const encryptedBid = await input.encrypt();
+
+      await this.auction.connect(this.signers.bob).bid(encryptedBid.handles[0], encryptedBid.inputProof);
+
+      // Verify no bid was recorded
+      const [bidTokens, bidPaid] = await this.auction.connect(this.signers.bob).getUserBid();
+      const decryptedBidTokens = await reencryptEuint64(
+        this.signers.bob,
+        this.instance,
+        bidTokens,
+        this.auctionAddress,
+      );
+      expect(decryptedBidTokens).to.equal(0n);
+    });
+
+    it("Should prevent multiple claims by same user", async function () {
+      // Place a bid
+      const bidAmount = 100n;
+      const input = this.instance.createEncryptedInput(this.auctionAddress, this.signers.bob.address);
+      input.add64(bidAmount);
+      const encryptedBid = await input.encrypt();
+
+      await this.auction.connect(this.signers.bob).bid(encryptedBid.handles[0], encryptedBid.inputProof);
+
+      // End auction
+      await time.increase(7 * 24 * 60 * 60 + 1);
+
+      // First claim should succeed
+      await this.auction.connect(this.signers.bob).claimUserRefund();
+
+      // Second claim should fail or have no effect
+      const [bidTokens] = await this.auction.connect(this.signers.bob).getUserBid();
+      expect(bidTokens).to.equal(0n);
     });
   });
 });

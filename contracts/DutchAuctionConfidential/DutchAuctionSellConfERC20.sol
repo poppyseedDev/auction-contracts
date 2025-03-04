@@ -36,6 +36,8 @@ contract DutchAuctionSellingConfidentialERC20 is
     uint256 public immutable startAt;
     /// @notice Timestamp when the auction ends
     uint256 public immutable expiresAt;
+    /// @notice Timestamp when the auction refund claims end
+    uint256 public immutable claimsExpiresAt;
     /// @notice Minimum price per token
     uint64 public immutable reservePrice;
     /// @notice Total amount of tokens being auctioned
@@ -104,6 +106,7 @@ contract DutchAuctionSellingConfidentialERC20 is
         discountRate = _discountRate;
         startAt = block.timestamp;
         expiresAt = block.timestamp + _biddingTime;
+        claimsExpiresAt = block.timestamp + 3 * _biddingTime; // could choose a potentially different design
         reservePrice = _reservePrice;
         stoppable = _isStoppable;
 
@@ -194,11 +197,9 @@ contract DutchAuctionSellingConfidentialERC20 is
 
             // Calculate cost of old tokens at new (lower) price
             euint64 oldTokensAtNewPrice = TFHE.mul(currentPricePerToken, oldTokenAmount);
-            // Potential amountToTransfer = total token amount at new price - oldPaidAmount
-            // euint64 amountToTransfer = TFHE.sub(TFHE.add(oldTokensAtNewPrice, newTokensCost), oldPaidAmount);
 
             euint64 totalTokenPrice = TFHE.add(oldTokensAtNewPrice, newTokensCost);
-            // if totalTokenAmount greater than oldPaidAmount no refund else refund
+            // if totalTokenAmount greater than oldPaidAmount extra payment and no refund needed else refund
             ebool refundNotNeeded = TFHE.ge(totalTokenPrice, oldPaidAmount);
             euint64 amountToTransfer = TFHE.select(
                 refundNotNeeded,
@@ -228,6 +229,9 @@ contract DutchAuctionSellingConfidentialERC20 is
             // Total tokens = previous tokens + new tokens
             euint64 totalTokens = TFHE.add(newTokenAmount, oldTokenAmount);
 
+            // Optional *depending on contract design choise* transfer tokens to user
+            _handleTokenTransfer(newTokenAmount);
+
             _updateBidInfo(totalTokens, totalTokenPrice, newTokenAmount);
         } else {
             // Verify enough tokens are available
@@ -238,6 +242,9 @@ contract DutchAuctionSellingConfidentialERC20 is
             euint64 sentBalance = _handleTransfer(newTokensCost);
 
             newTokenAmount = TFHE.select(TFHE.ne(sentBalance, 0), newTokenAmount, TFHE.asEuint64(0));
+
+            // Optional *depending on contract design choise* transfer tokens to user
+            _handleTokenTransfer(newTokenAmount);
 
             _updateBidInfo(newTokenAmount, sentBalance, newTokenAmount);
         }
@@ -260,6 +267,12 @@ contract DutchAuctionSellingConfidentialERC20 is
         paymentToken.transfer(msg.sender, amountToTransfer);
     }
 
+    /// @dev Helper function to handle token transfer
+    function _handleTokenTransfer(euint64 amountToTransfer) private {
+        TFHE.allowTransient(amountToTransfer, address(token));
+        token.transfer(msg.sender, amountToTransfer);
+    }
+
     /// @dev Helper function to update bid information
     function _updateBidInfo(euint64 totalTokenAmount, euint64 totalPaidAmount, euint64 newTokenAmount) private {
         bids[msg.sender].tokenAmount = totalTokenAmount;
@@ -277,7 +290,7 @@ contract DutchAuctionSellingConfidentialERC20 is
 
     /// @notice Claim tokens and refund for a bidder after auction ends
     /// @dev Transfers tokens to bidder and refunds excess payment based on final price
-    function claimUser() external onlyAfterEnd {
+    function claimUserRefund() external onlyAfterAuctionEnds {
         Bid storage userBid = bids[msg.sender];
 
         uint finalPrice = getPrice();
@@ -285,11 +298,8 @@ contract DutchAuctionSellingConfidentialERC20 is
         euint64 finalCost = TFHE.mul(finalPricePerToken, userBid.tokenAmount);
         euint64 refundAmount = TFHE.sub(userBid.paidAmount, finalCost);
 
-        // Transfer tokens and refund
-        TFHE.allowTransient(userBid.tokenAmount, address(token));
-        token.transfer(msg.sender, userBid.tokenAmount);
-        TFHE.allowTransient(refundAmount, address(paymentToken));
-        paymentToken.transfer(msg.sender, refundAmount);
+        // Transfer refund
+        _handleRefund(refundAmount);
 
         // Clear the bid
         delete bids[msg.sender];
@@ -297,7 +307,7 @@ contract DutchAuctionSellingConfidentialERC20 is
 
     /// @notice Claim proceeds for the seller after auction ends
     /// @dev Transfers all remaining tokens and payments to seller
-    function claimSeller() external onlyOwner onlyAfterEnd {
+    function claimSeller() external onlyOwner onlyAfterClaimsEnd {
         // Get the total amount of payment tokens in the contract
         euint64 contractPaymentBalance = paymentToken.balanceOf(address(this));
         euint64 contractAuctionBalance = token.balanceOf(address(this));
@@ -345,10 +355,19 @@ contract DutchAuctionSellingConfidentialERC20 is
     }
 
     /// @notice Modifier to ensure function is called after auction ends
-    /// @dev Reverts if called before the auction end time and not manually stopped
-    modifier onlyAfterEnd() {
+    /// @dev Reverts if called before the auction end time and called after claims time expire and not manually stopped
+    modifier onlyAfterAuctionEnds() {
         if (!auctionStart) revert AuctionNotStarted();
         if (block.timestamp < expiresAt && manuallyStopped == false) revert TooEarly(expiresAt);
+        if (block.timestamp >= claimsExpiresAt) revert TooLate(claimsExpiresAt);
+        _;
+    }
+
+    /// @notice Modifier to ensure function is called after refund claim period ends
+    /// @dev Reverts if called before the auction refund claims period end time and not manually stopped
+    modifier onlyAfterClaimsEnd() {
+        if (!auctionStart) revert AuctionNotStarted();
+        if (block.timestamp < claimsExpiresAt && manuallyStopped == false) revert TooEarly(claimsExpiresAt);
         _;
     }
 

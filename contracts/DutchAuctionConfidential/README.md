@@ -23,16 +23,77 @@ This contract implements a Dutch auction mechanism where:
 
 1. **Initialization**:
    - Owner sets starting price, discount rate, reserve price, and token amounts
-   - Owner transfers auction tokens to the contract
+   - Owner must approve the contract to transfer auction tokens
+   - Owner calls `initialize()` to start the auction
 
 2. **Bidding**:
    - Users can bid at any time during the auction
    - Price decreases linearly over time until reaching reserve price
-   - If the user did the bid in the past, but now the token price has gone down, and they want to buy more tokens, they can use some of the refundable paymentToken towards buying more tokens
+   - Users can bid multiple times, with each bid:
+     - Automatically adjusting previous bids to current lower price
+     - Transferring tokens immediately to the buyer
+     - Managing refunds or additional payments as needed
 
-3. **Claiming**:
-   - After auction ends, users can claim their tokens and any refunds
-   - Seller can claim proceeds and unsold tokens
+3. **Claims and Settlement**:
+   - After auction ends, users call `claimUserRefund()` to receive refunds
+   - After claims period, seller calls `claimSeller()` to receive proceeds and unsold tokens
+
+## Design choices
+
+### "Soft Dutch auction" mechanism
+Unlike a classical Dutch auction where prices are locked in immediately upon bidding, this implementation uses a "soft" or "rolling" Dutch auction mechanism where:
+
+1. Users can place bids at any time during the auction period
+2. The effective price for all tokens is determined by the latest bid price
+3. Previous bids are automatically adjusted to the new lower price
+4. Excess payments are tracked and can be:
+   - Applied to future token purchases
+   - Claimed as refunds after the auction ends
+
+While this approach is more computationally expensive due to price recalculations, it offers several advantages:
+- Encourages continued participation as prices decrease
+- Allows users to efficiently use their existing deposits
+- Creates a more dynamic and engaging auction process
+- Treats all participants fairly by giving the same final price
+  
+_Mathematics of the `bid` function are explained in the Mathematics section_
+
+If recalculations preformed in the `bid` function are deemed to be too computationally expensive, another `refund` function could be potentially created where users claim their refunds.
+
+### Immediate token transfer on bid
+Tokens are transferred to buyers immediately upon successfully bidding rather than requiring a separate claim step. This design choice:
+
+- Provides instant gratification to buyers
+- Reduces the risk of users forgetting to claim tokens
+- Eliminates the need for additional contract interactions
+- Improves overall user experience
+
+The tradeoff is higher FHE gas costs during bidding, but this is outweighed by the UX benefits and reduced support overhead.
+
+### Two-phase auction conclusion
+The auction uses a two-phase conclusion process:
+
+1. Bidding Phase (`startTime` to `expiresAt`):
+   - Active bidding period
+   - Price decreases according to discount rate
+   - Immediate token transfers on successful bids
+
+2. Claims Phase (`expiresAt` to `claimsExpiresAt`):
+   - No new bids accepted
+   - Users can claim refunds from price adjustments using `claimUserRefund()`
+   - Duration is 3x the bidding period
+
+3. Seller Claim Phase (`claimsExpiresAt` onward):
+   - Users cannot claim refunds any longer
+   - Seller claims remaining funds and tokens using `claimSeller()`
+
+This design:
+- Ensures users have adequate time to claim refunds
+- Prevents the seller from withdrawing funds before users can claim
+- Provides clear timeframes for all participants
+- Doesn't require the bidder to have to calculate how many tokens they can take without taking users refunds.
+
+The extended claims period (3x bidding time) could be adjusted based on specific needs, but provides a reasonable window for users to act while not indefinitely locking seller funds.
 
 ## Mathematics
 
@@ -104,14 +165,16 @@ X = | TA1 * TP1 - TA1 * TP2 - TA2 * TP2 |
 ### Core Functions
 - `initialize()`: Start the auction
 - `bid(einput encryptedValue, bytes calldata inputProof)`: Submit a bid
-- `claimUser()`: Claim tokens and refunds after auction
+- `claimUserRefund()`: Claim refunds after auction
 - `claimSeller()`: Seller claims proceeds after auction
 - `getPrice()`: Get current token price
+- `getUserBid()`: Get user's current bid information
 
 ### Administrative Functions
 - `stop()`: Manually stop the auction (if enabled)
 - `cancelAuction()`: Cancel auction and return tokens to seller
 - `requestTokensLeftReveal()`: Request decryption of remaining tokens
+- `initialize()`: Initialize the auction with tokens from seller
 
 ## Security Features
 
@@ -142,7 +205,7 @@ X = | TA1 * TP1 - TA1 * TP2 - TA2 * TP2 |
 3. Users can participate by calling `bid()` with encrypted values
 
 4. After auction ends:
-   - Users call `claimUser()` to receive tokens and refunds
+   - Users call `claimUserRefund()` to receive refunds
    - Seller calls `claimSeller()` to receive proceeds
 
 ## License
