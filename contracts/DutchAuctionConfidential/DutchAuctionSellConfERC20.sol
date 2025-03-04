@@ -182,9 +182,6 @@ contract DutchAuctionSellingConfidentialERC20 is
         euint64 newTokenAmount = TFHE.asEuint64(encryptedValue, inputProof);
         uint64 currentPricePerToken = getPrice();
 
-        // Calculate costs for new tokens
-        // euint64 newTokensCost = TFHE.mul(currentPricePerToken, newTokenAmount);
-
         // Calculate how many new tokens can be bought
         newTokenAmount = TFHE.min(newTokenAmount, tokensLeft);
 
